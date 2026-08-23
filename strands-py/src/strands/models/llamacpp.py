@@ -658,7 +658,10 @@ class LlamaCppModel(Model):
                 # Check for finish reason
                 if choice.get("finish_reason"):
                     finish_reason = choice.get("finish_reason")
-                    break
+                    # Do not break: llama.cpp sends the usage chunk (empty choices)
+                    # after the finish_reason chunk and before [DONE]. Keep draining
+                    # so usage_data is captured below.
+                    continue
 
             yield self._format_chunk({"chunk_type": "content_stop"})
 

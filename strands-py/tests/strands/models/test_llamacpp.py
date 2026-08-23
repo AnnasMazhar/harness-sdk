@@ -324,6 +324,13 @@ async def test_stream_basic() -> None:
             "contentBlockDelta" in chunk and chunk["contentBlockDelta"]["delta"]["text"] == " world" for chunk in chunks
         )
         assert any("messageStop" in chunk for chunk in chunks)
+        assert any(
+            "metadata" in chunk
+            and chunk["metadata"]["usage"]["inputTokens"] == 10
+            and chunk["metadata"]["usage"]["outputTokens"] == 5
+            and chunk["metadata"]["usage"]["totalTokens"] == 15
+            for chunk in chunks
+        )
 
 
 @pytest.mark.asyncio
