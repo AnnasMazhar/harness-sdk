@@ -266,18 +266,35 @@ class RepositorySessionManager(SessionManager[LocalAgent]):
             # Restore the conversation manager to its previous state, and get the optional prepend messages
             prepend_messages = []
             offset = 0
+            pin_first = 0
             if isinstance(agent, Agent):
                 prepend_messages = (
                     agent.conversation_manager.restore_from_session(session_agent.conversation_manager_state) or []
                 )
                 offset = agent.conversation_manager.removed_message_count
+                # Detect ``pin_first`` so the leading still-live messages can be reattached instead of
+                # being skipped by the offset. See https://github.com/strands-agents/harness-sdk/issues/4027.
+                conversation_manager = agent.conversation_manager
+                if getattr(conversation_manager, "_pin_first_applied", False):
+                    pin_first = getattr(conversation_manager, "pin_first", 0) or 0
+
+            pinned_messages: list[Message] = []
+            if pin_first > 0:
+                pinned_session_messages = self.session_repository.list_messages(
+                    session_id=self.session_id,
+                    agent_id=agent.agent_id,
+                    limit=pin_first,
+                    offset=0,
+                )
+                pinned_messages = [session_message.to_message() for session_message in pinned_session_messages]
 
             # List the messages currently in the session, using an offset of the messages previously removed
-            # by the conversation manager.
+            # by the conversation manager. The offset must also skip past the still-live pinned head so the
+            # tail does not overlap with the messages reattached as ``pinned_messages`` above.
             session_messages = self.session_repository.list_messages(
                 session_id=self.session_id,
                 agent_id=agent.agent_id,
-                offset=offset,
+                offset=pin_first + offset,
             )
             self._held_records[agent.agent_id] = list(session_messages)
             if len(session_messages) > 0:
@@ -291,10 +308,13 @@ class RepositorySessionManager(SessionManager[LocalAgent]):
                     self.session_id,
                 )
             else:
-                # Restore the agents messages array including the optional prepend messages
-                agent.messages = prepend_messages + [
-                    session_message.to_message() for session_message in session_messages
-                ]
+                # Restore the agents messages array including the optional prepend messages and the
+                # still-live pinned head that compaction pushed back to the front.
+                agent.messages = (
+                    pinned_messages
+                    + prepend_messages
+                    + [session_message.to_message() for session_message in session_messages]
+                )
 
                 # Fix broken session histories: https://github.com/strands-agents/harness-sdk/issues/859
                 agent.messages = self._fix_broken_tool_use(agent.messages)
