@@ -92,6 +92,7 @@ class ConversationManager(ABC, HookProvider):
             raise ValueError(f"compression_threshold must be between 0 (exclusive) and 1 (inclusive), got {threshold}")
 
         self.removed_message_count = 0
+        self.pinned_head_count = 0
         self._compression_threshold = threshold
 
     def register_hooks(self, registry: HookRegistry, **kwargs: Any) -> None:
@@ -160,6 +161,7 @@ class ConversationManager(ABC, HookProvider):
         if state.get("__name__") != self.__class__.__name__:
             raise ValueError("Invalid conversation manager state.")
         self.removed_message_count = state["removed_message_count"]
+        self.pinned_head_count = state.get("pinned_head_count", 0)
         return None
 
     def get_state(self) -> dict[str, Any]:
@@ -167,6 +169,7 @@ class ConversationManager(ABC, HookProvider):
         return {
             "__name__": self.__class__.__name__,
             "removed_message_count": self.removed_message_count,
+            "pinned_head_count": self.pinned_head_count,
         }
 
     @abstractmethod
