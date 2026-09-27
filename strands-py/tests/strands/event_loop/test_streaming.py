@@ -629,7 +629,6 @@ def test_handle_content_block_delta(event: ContentBlockDeltaEvent, event_type, s
             },
         ),
         # Regression: text and a pending tool use both land in content (#4004).
-        # Append order follows the function: toolUse first, then text.
         (
             {
                 "content": [],
