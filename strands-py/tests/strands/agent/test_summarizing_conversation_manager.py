@@ -1011,14 +1011,17 @@ def test_reduce_context_failure_rolls_back_pinned_head_count():
 
 
 def test_reduce_context_retry_after_failure_records_correct_count():
-    """A retry after a failed summary should record the compaction correctly.
+    """Retry after a failed summary records the compaction correctly.
 
-    This test induces a failure first, then succeeds on retry, verifying:
-    1. Failed attempt leaves bookkeeping unchanged
-    2. Successful retry records the exact transcript
-    3. removed_message_count tracks summarized messages correctly
+    First attempt: reactive path raises (e is set), failure is re-raised so the agent loop
+    knows the overflow was not resolved.  Second attempt: proactive path succeeds and commits
+    the bookkeeping atomically.  Asserts:
+    1. Failed attempt leaves all bookkeeping unchanged (atomic design).
+    2. Successful retry records the exact transcript.
+    3. model.stream was called twice — proves the first (failing) call was actually exercised.
     """
-    # Set up an agent mock that will fail on first call, succeed on second
+    from strands.types.exceptions import ContextWindowOverflowException
+
     call_count = [0]
 
     def stream_with_failure(*args, **kwargs):
@@ -1038,20 +1041,27 @@ def test_reduce_context_retry_after_failure_records_correct_count():
         pin_first=2,
     )
 
-    # First call: proactive path (e=None), should swallow the error
-    with patch("strands.agent.conversation_manager.summarizing_conversation_manager.logger"):
-        manager.reduce_context(retry_agent)
+    # First call: reactive path (e is set) — failure must be re-raised so the caller knows
+    # the overflow was not resolved.
+    overflow = ContextWindowOverflowException("context overflow")
+    with pytest.raises(RuntimeError, match="provider outage"):
+        manager.reduce_context(retry_agent, e=overflow)
 
-    # Bookkeeping must be unchanged after failure
+    # Bookkeeping must be unchanged after failure (atomic design).
     assert manager.removed_message_count == 0
     assert manager.pinned_head_count == 0
     assert manager._summary_message is None
+    # Proves the failure path was actually exercised, not skipped.
+    assert retry_agent.model.stream.call_count == 1
 
-    # Restore messages for retry (the failed attempt didn't modify them because of atomic design)
+    # Restore messages — the failed attempt left them intact because bookkeeping is atomic.
     retry_agent.messages = [{"role": "user", "content": [{"text": f"msg {i}"}]} for i in range(6)]
 
-    # Second call: should succeed
+    # Second call: proactive path (e=None) — should succeed and commit the compaction.
     manager.reduce_context(retry_agent)
+
+    # Both model.stream calls happened: once for the failed attempt, once for the retry.
+    assert retry_agent.model.stream.call_count == 2
 
     # With summary_ratio=0.5 and 6 messages, preserve_recent_messages=1:
     # messages_to_summarize = min(3, 5) = 3
