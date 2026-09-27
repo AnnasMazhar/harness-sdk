@@ -1424,9 +1424,16 @@ def test_initialize_restores_summary_without_pin_first(existing_session_manager)
 
 
 def test_initialize_pinned_messages_no_summary_yet(existing_session_manager):
-    """When pin_first is set but summarization hasn't run, restore must still produce the live transcript."""
+    """When pin_first is set but summarization hasn't run, restore must produce the full transcript
+    and must NOT invoke the pinned-head fetch path (pinned_head_count == 0).
+
+    The gate ``if pinned_head_count > 0:`` must suppress the pinned-head list_messages call so
+    that restoring a pre-compaction session never issues a spurious ``limit=0`` query.  If the
+    gate is replaced with ``if True:``, list_messages is called with ``limit=0`` which is
+    detectable via the call record.
+    """
     conversation_manager = SummarizingConversationManager(pin_first=2)
-    # _pin_first_applied is False here because no compaction has happened yet.
+    # No compaction has happened, so pinned_head_count == 0 in the persisted state.
 
     session_agent = SessionAgent(
         agent_id="fresh-pin-agent",
@@ -1441,11 +1448,25 @@ def test_initialize_pinned_messages_no_summary_yet(existing_session_manager):
         ["keep-0", "keep-1", "keep-2"],
     )
 
+    # Spy on list_messages to detect any call that passes limit=0, which would indicate the
+    # gate fired when it should not have (pinned_head_count == 0).
+    real_list = existing_session_manager.session_repository.list_messages
+    limit_zero_calls = []
+
+    def spy_list_messages(session_id, agent_id, limit=None, offset=0):
+        if limit == 0:
+            limit_zero_calls.append((session_id, agent_id, limit, offset))
+        return real_list(session_id, agent_id, limit=limit, offset=offset)
+
+    existing_session_manager.session_repository.list_messages = spy_list_messages
+
     agent = Agent(agent_id="fresh-pin-agent", conversation_manager=SummarizingConversationManager(pin_first=2))
     existing_session_manager.initialize(agent)
 
     texts = [m["content"][0]["text"] for m in agent.messages]
     assert texts == ["keep-0", "keep-1", "keep-2"]
+    # The gate must have suppressed the fetch — no limit=0 call is acceptable.
+    assert limit_zero_calls == [], "gate was bypassed: list_messages(limit=0) was called when pinned_head_count == 0"
 
 
 def test_initialize_restores_from_legacy_state_missing_pinned_head_count(existing_session_manager):
