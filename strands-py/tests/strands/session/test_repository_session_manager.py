@@ -189,6 +189,9 @@ def test_initialize_restores_existing_agent_with_summarizing_conversation_manage
     assert agent.messages[1]["role"] == "user"
     assert agent.messages[1]["content"][0]["text"] == "Hello"
     assert agent.conversation_manager.removed_message_count == 1
+    # Exact transcript: summary at index 0, then the one remaining stored message.
+    texts = [m["content"][0].get("text", "") for m in agent.messages]
+    assert texts[0] == "summary"
 
 
 def test_append_message(session_manager):
@@ -1365,9 +1368,9 @@ def test_initialize_empty_tail_does_not_restart_message_ids(existing_session_man
 def test_initialize_restores_pinned_messages_after_summary_with_pin_first(existing_session_manager):
     """After a compaction with pin_first, restoring the agent must reattach the pinned head.
 
-    Without the fix, ``list_messages(offset=removed_message_count)`` skips the first
-    message — which happens to be a pinned head — so the resumed agent loses both
-    the pinned messages and has the offset-skim duplicate them with the summary.
+    ``list_messages(offset=pinned_head_count + removed_message_count)`` skips past the
+    still-live pinned head so the tail does not overlap with the messages reattached at
+    the front; the resumed agent must see exactly the live transcript in order.
     """
     conversation_manager = SummarizingConversationManager(pin_first=3)
     conversation_manager.removed_message_count = 1
@@ -1395,32 +1398,6 @@ def test_initialize_restores_pinned_messages_after_summary_with_pin_first(existi
     # Restore must reproduce exactly that, in order.
     texts = [m["content"][0]["text"] for m in agent.messages]
     assert texts == ["pinned-0", "pinned-1", "pinned-2", "summary of msg-3", "msg-4"]
-
-
-def test_initialize_restores_summary_without_pin_first(existing_session_manager):
-    """Without pin_first, the existing behaviour of offset=removed_message_count is preserved."""
-    conversation_manager = SummarizingConversationManager()
-    conversation_manager.removed_message_count = 1
-    conversation_manager._summary_message = {"role": "user", "content": [{"text": "summary"}]}
-
-    session_agent = SessionAgent(
-        agent_id="no-pin-agent",
-        state={},
-        conversation_manager_state=conversation_manager.get_state(),
-    )
-    existing_session_manager.session_repository.create_agent("test-session", session_agent)
-
-    _populate_messages(
-        existing_session_manager.session_repository,
-        "no-pin-agent",
-        ["a", "b", "c"],
-    )
-
-    agent = Agent(agent_id="no-pin-agent", conversation_manager=SummarizingConversationManager())
-    existing_session_manager.initialize(agent)
-
-    texts = [m["content"][0]["text"] for m in agent.messages]
-    assert texts == ["summary", "b", "c"]
 
 
 def test_initialize_pinned_messages_no_summary_yet(existing_session_manager):

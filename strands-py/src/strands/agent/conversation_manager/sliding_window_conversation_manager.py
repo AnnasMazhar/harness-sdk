@@ -79,7 +79,6 @@ class SlidingWindowConversationManager(ConversationManager):
         self.should_truncate_results = should_truncate_results
         self.per_turn = per_turn
         self.pin_first = max(0, pin_first) if pin_first is not None else None
-        self._pin_first_applied = False
         self._model_call_count = 0
 
     def register_hooks(self, registry: "HookRegistry", **kwargs: Any) -> None:
@@ -196,9 +195,9 @@ class SlidingWindowConversationManager(ConversationManager):
         messages = agent.messages
 
         # Pin first N messages permanently (only on first reduction)
-        if self.pin_first and not self._pin_first_applied:
+        if self.pin_first and self.pinned_head_count == 0:
             apply_pin_first(messages, self.pin_first)
-            self._pin_first_applied = True
+            self.pinned_head_count = min(self.pin_first, len(messages))
 
         # window_size=0 means "remove all non-pinned messages"
         if self.window_size == 0:

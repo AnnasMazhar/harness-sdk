@@ -948,19 +948,8 @@ def test_proactive_compression_swallows_errors():
 #
 # Bug 2: a failing summarization must not mutate the bookkeeping that the
 # session manager uses to restore the agent (removed_message_count,
-# _pin_first_applied, _summary_message).
+# pinned_head_count, _summary_message).
 # ---------------------------------------------------------------------------
-
-
-def _async_gen_raising(exc):
-    """Build an async generator that raises on first iteration."""
-
-    async def _gen(*_args, **_kwargs):
-        raise exc
-        if False:  # pragma: no cover - make this a generator
-            yield None
-
-    return _gen
 
 
 def test_reduce_context_failure_rolls_back_removed_message_count():
@@ -968,7 +957,9 @@ def test_reduce_context_failure_rolls_back_removed_message_count():
 
     failing_agent = Mock()
     failing_agent.model = Mock()
-    failing_agent.model.stream = Mock(side_effect=_async_gen_raising(RuntimeError("provider outage")))
+    failing_agent.model.stream = Mock(
+        side_effect=lambda *a, **kw: _mock_model_stream_error(RuntimeError("provider outage"))
+    )
     failing_agent.messages = [{"role": "user", "content": [{"text": f"msg {i}"}]} for i in range(6)]
 
     manager = SummarizingConversationManager(
@@ -991,7 +982,9 @@ def test_reduce_context_failure_rolls_back_pinned_head_count():
 
     failing_agent = Mock()
     failing_agent.model = Mock()
-    failing_agent.model.stream = Mock(side_effect=_async_gen_raising(RuntimeError("provider outage")))
+    failing_agent.model.stream = Mock(
+        side_effect=lambda *a, **kw: _mock_model_stream_error(RuntimeError("provider outage"))
+    )
     failing_agent.messages = [{"role": "user", "content": [{"text": f"msg {i}"}]} for i in range(6)]
 
     manager = SummarizingConversationManager(
