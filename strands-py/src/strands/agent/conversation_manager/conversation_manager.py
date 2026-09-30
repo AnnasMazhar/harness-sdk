@@ -78,6 +78,9 @@ class ConversationManager(ABC, HookProvider):
           removed_message_count: The messages that have been removed from the agents messages array.
               These represent messages provided by the user or LLM that have been removed, not messages
               included by the conversation manager through something like summarization.
+          pinned_head_count: The number of leading messages the manager has protected from eviction.
+              Restoring a session reattaches this many stored messages, so it counts every protected
+              message, including the tool-pair partner of a pinned message.
         """
         # Resolve the threshold from proactive_compression parameter
         if proactive_compression is True:

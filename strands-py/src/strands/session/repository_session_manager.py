@@ -4,6 +4,7 @@ import copy
 import logging
 from typing import TYPE_CHECKING, Any
 
+from ..agent.conversation_manager.compression.pin_message import pin_message
 from ..agent.state import AgentState
 from ..tools._tool_helpers import generate_missing_tool_result_content
 from ..types.agent import LocalAgent
@@ -22,19 +23,6 @@ if TYPE_CHECKING:
     from ..multiagent.base import MultiAgentBase
 
 logger = logging.getLogger(__name__)
-
-
-def _pin_message_inline(messages: list[Message], index: int) -> None:
-    """Pin a message so it is protected from eviction during context reduction.
-
-    Mutates the message in place by setting metadata.custom.pinned = True.
-    """
-    message = messages[index]
-    metadata = message.get("metadata", {})
-    custom = metadata.get("custom", {})
-    custom["pinned"] = True
-    metadata["custom"] = custom
-    message["metadata"] = metadata
 
 
 class RepositorySessionManager(SessionManager[LocalAgent]):
@@ -300,7 +288,7 @@ class RepositorySessionManager(SessionManager[LocalAgent]):
                 pinned_messages = [session_message.to_message() for session_message in pinned_session_messages]
                 # Re-apply pin markers to the restored head so the next compaction respects them.
                 for i in range(len(pinned_messages)):
-                    _pin_message_inline(pinned_messages, i)
+                    pin_message(pinned_messages, i)
 
             # List the messages currently in the session, using an offset of the messages previously removed
             # by the conversation manager. The offset must also skip past the still-live pinned head so the
