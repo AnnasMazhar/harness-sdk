@@ -11,7 +11,7 @@ from ...types.content import ContentBlock, Messages
 from ...types.exceptions import ContextWindowOverflowException
 from ...types.tools import ToolResultContent
 from .compression.context_compression import find_valid_trim_point
-from .compression.pin_message import apply_pin_first, is_pinned
+from .compression.pin_message import apply_pin_first, count_protected_prefix, is_pinned
 from .conversation_manager import ConversationManager, ProactiveCompressionConfig
 
 logger = logging.getLogger(__name__)
@@ -197,7 +197,9 @@ class SlidingWindowConversationManager(ConversationManager):
         # Pin first N messages permanently (only on first reduction)
         if self.pin_first and self.pinned_head_count == 0:
             apply_pin_first(messages, self.pin_first)
-            self.pinned_head_count = min(self.pin_first, len(messages))
+            # is_pinned also protects a pinned message's tool-pair partner, so the protected head can
+            # be longer than pin_first; restore reattaches exactly this many stored messages.
+            self.pinned_head_count = count_protected_prefix(messages)
 
         # window_size=0 means "remove all non-pinned messages"
         if self.window_size == 0:
