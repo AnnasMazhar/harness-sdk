@@ -5,6 +5,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from strands import tool
 from strands.agent.agent import Agent
 from strands.agent.conversation_manager.null_conversation_manager import NullConversationManager
 from strands.agent.conversation_manager.sliding_window_conversation_manager import SlidingWindowConversationManager
@@ -1614,6 +1615,124 @@ def _converse_until_compaction(agent, model, max_turns=30):
         if model.summarisation_calls:
             return turn
     raise RuntimeError(f"{max_turns} turns produced no summarisation call")
+
+
+@tool
+def echo(text: str) -> str:
+    """Return the supplied text unchanged."""
+    return text
+
+
+class ToolCallingModel:
+    """A model stub that calls ``echo`` on the first turn and answers with text on every later turn."""
+
+    def __init__(self, context_window: int = 200):
+        self.context_window = context_window
+        self.stateful = False
+        self._utilization_limit_warned = False
+        self.calls = 0
+
+    def update_config(self, **model_config):
+        pass
+
+    def get_config(self):
+        return {"context_window_limit": self.context_window}
+
+    @property
+    def context_window_limit(self):
+        return self.context_window
+
+    def estimate_utilization(self, input_tokens):
+        return input_tokens / self.context_window
+
+    async def stream(self, messages, tool_specs=None, system_prompt=None, **kwargs):
+        """Emit a single ``echo`` tool call, then plain text once the call is in the transcript."""
+        self.calls += 1
+        called_tool = any("toolUse" in block for message in messages for block in message.get("content", []))
+
+        yield {"messageStart": {"role": "assistant"}}
+        if not called_tool:
+            yield {"contentBlockStart": {"start": {"toolUse": {"toolUseId": "tu1", "name": "echo"}}}}
+            yield {"contentBlockDelta": {"delta": {"toolUse": {"input": '{"text": "REAL RESULT"}'}}}}
+            yield {"contentBlockStop": {}}
+            yield {"messageStop": {"stopReason": "tool_use"}}
+        else:
+            yield {"contentBlockDelta": {"delta": {"text": f"answer {self.calls}"}}}
+            yield {"contentBlockStop": {}}
+            yield {"messageStop": {"stopReason": "end_turn"}}
+        yield {
+            "metadata": {
+                "usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2},
+                "metrics": {"latencyMs": 0},
+            }
+        }
+
+
+def _build_sliding_file_agent(tmp_path, model, pin_first=2, window_size=4):
+    """Build a sliding-window agent backed by a FileSessionManager for end-to-end testing."""
+    return Agent(
+        model=model,
+        system_prompt="Agent System Prompt",
+        tools=[echo],
+        conversation_manager=SlidingWindowConversationManager(
+            pin_first=pin_first, window_size=window_size, should_truncate_results=False
+        ),
+        session_manager=FileSessionManager(session_id="repro", storage_dir=str(tmp_path)),
+        callback_handler=None,
+    )
+
+
+def _transcript(agent):
+    """Extract role + content blocks for each message, ignoring per-message metadata such as pin markers."""
+    return [(message["role"], copy.deepcopy(message["content"])) for message in agent.messages]
+
+
+def test_file_session_sliding_window_restore_matches_in_memory(tmp_path):
+    """End-to-end: a resumed sliding-window session matches the live transcript after a pin_first trim."""
+    agent = _build_sliding_file_agent(tmp_path, StubModel(), window_size=2)
+    agent("first question")
+    agent("second question")
+    agent("third question")
+    in_memory = _transcript(agent)
+    assert agent.conversation_manager.removed_message_count > 0, "no trimming happened, restore is not exercised"
+
+    restored_agent = _build_sliding_file_agent(tmp_path, StubModel(), window_size=2)
+    restored = _transcript(restored_agent)
+
+    assert restored == in_memory, (
+        f"a resumed sliding-window session is not the conversation the agent had.\n"
+        f"  in memory ({len(in_memory)}): {in_memory}\n"
+        f"  restored  ({len(restored)}): {restored}"
+    )
+    assert restored_agent.conversation_manager.pinned_head_count == 2
+
+
+def test_file_session_sliding_window_restore_keeps_pinned_tool_pair(tmp_path):
+    """End-to-end: the restored head covers the pinned tool pair, so the real tool result survives (#4087).
+
+    ``pin_first=2`` pins the opening user message and the assistant toolUse, and trimming also keeps the
+    toolResult partner. The persisted head count has to cover all three; otherwise a resumed session
+    reattaches a toolUse with no result and the session manager fabricates an interrupted-tool error.
+    """
+    agent = _build_sliding_file_agent(tmp_path, ToolCallingModel())
+    agent("use the tool")
+    agent("second question")
+    agent("third question")
+    in_memory = _transcript(agent)
+    assert agent.conversation_manager.pinned_head_count == 3
+    assert agent.conversation_manager.removed_message_count > 0, "no trimming happened, restore is not exercised"
+
+    restored_agent = _build_sliding_file_agent(tmp_path, ToolCallingModel())
+    restored = _transcript(restored_agent)
+
+    assert restored == in_memory, (
+        f"a resumed sliding-window session lost the protected tool pair.\n"
+        f"  in memory ({len(in_memory)}): {in_memory}\n"
+        f"  restored  ({len(restored)}): {restored}"
+    )
+    flattened = str(restored)
+    assert "REAL RESULT" in flattened
+    assert "Tool was interrupted." not in flattened
 
 
 def test_file_session_resumed_conversation_matches_in_memory(tmp_path):
