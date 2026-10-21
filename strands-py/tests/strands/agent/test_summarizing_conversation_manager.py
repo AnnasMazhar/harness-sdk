@@ -1031,6 +1031,7 @@ def test_reduce_context_retry_after_failure_records_correct_count():
     retry_agent = Mock()
     retry_agent.model = Mock()
     retry_agent.model.stream = Mock(side_effect=stream_with_failure)
+    retry_agent.aux_model = retry_agent.model
     retry_agent.messages = [{"role": "user", "content": [{"text": f"msg {i}"}]} for i in range(6)]
 
     manager = SummarizingConversationManager(
