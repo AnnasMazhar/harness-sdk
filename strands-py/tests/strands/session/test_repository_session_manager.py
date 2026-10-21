@@ -1719,6 +1719,31 @@ def test_file_session_resumed_conversation_matches_in_memory(tmp_path):
     )
 
 
+def test_file_session_second_compaction_after_restore_keeps_pinned_head(tmp_path):
+    """End-to-end: a compaction after a restore does not summarize the pinned head away (#4027).
+
+    The first restore proves the count is persisted. The second compaction proves the restored
+    manager still treats those messages as protected.
+    """
+    model = StubModel()
+    agent = _build_file_agent(tmp_path, model)
+    _converse_until_compaction(agent, model)
+    pinned = _texts(agent)[: agent.conversation_manager.pinned_head_count]
+    assert pinned, "pin_first pinned no messages, so the test proves nothing"
+
+    restored_model = StubModel()
+    restored_agent = _build_file_agent(tmp_path, restored_model)
+    assert _texts(restored_agent)[: len(pinned)] == pinned
+
+    _converse_until_compaction(restored_agent, restored_model)
+
+    assert _texts(restored_agent)[: len(pinned)] == pinned, (
+        f"compaction after restore summarized the pinned head away.\n"
+        f"  pinned: {pinned}\n"
+        f"  after:  {_texts(restored_agent)}"
+    )
+
+
 def test_file_session_failed_summarisation_keeps_messages(tmp_path):
     """End-to-end: if summarisation fails, the messages that would have been summarised are preserved.
 
