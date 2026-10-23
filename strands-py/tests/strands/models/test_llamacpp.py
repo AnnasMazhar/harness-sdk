@@ -1124,3 +1124,77 @@ def test_format_request_logs_skipped_blocks_once_per_request(caplog):
     messages_logged = [record.getMessage() for record in caplog.records]
     assert len(messages_logged) == 1
     assert "count=<3> | Location sources are not supported by llama.cpp" in messages_logged[0]
+
+
+@pytest.mark.asyncio
+async def test_stream_tool_call_cut_off_by_max_tokens_reports_max_tokens() -> None:
+    """A tool call truncated by the server's output cap must surface as max_tokens, not tool_use.
+
+    When llama.cpp hits its output cap partway through streaming a tool call's arguments,
+    finish_reason is "length" and the arguments are truncated. The truncated call is not
+    executable, so it must not be reported as tool_use, which invokes the tool with partial
+    JSON and loops instead of raising MaxTokensReachedException.
+    """
+    model = LlamaCppModel()
+
+    mock_response_lines = [
+        'data: {"choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "id": "call_1", "type": '
+        '"function", "function": {"name": "write_file", "arguments": ""}}]}}]}',
+        'data: {"choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "function": {"arguments": '
+        '\'{"path": "notes.md", "content": "Lorem ipsum dol\'}}]}}]}',
+        'data: {"choices": [{"index": 0, "delta": {}, "finish_reason": "length"}]}',
+        "data: [DONE]",
+    ]
+
+    async def mock_aiter_lines():
+        for line in mock_response_lines:
+            yield line
+
+    mock_response = AsyncMock()
+    mock_response.aiter_lines = mock_aiter_lines
+    mock_response.raise_for_status = MagicMock()
+
+    with patch.object(model.client, "post", return_value=mock_response):
+        messages = [{"role": "user", "content": [{"text": "save my notes"}]}]
+
+        chunks = []
+        async for chunk in model.stream(messages):
+            chunks.append(chunk)
+
+    stop_chunks = [chunk for chunk in chunks if "messageStop" in chunk]
+    assert len(stop_chunks) == 1
+    assert stop_chunks[0]["messageStop"]["stopReason"] == "max_tokens"
+
+
+@pytest.mark.asyncio
+async def test_stream_tool_call_with_tool_calls_finish_reason_reports_tool_use() -> None:
+    """A complete tool call still reports tool_use; only the length cut-off changes."""
+    model = LlamaCppModel()
+
+    mock_response_lines = [
+        'data: {"choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "id": "call_1", "type": '
+        '"function", "function": {"name": "write_file", "arguments": ""}}]}}]}',
+        'data: {"choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "function": {"arguments": '
+        '\'{"path": "notes.md"}\'}}]}}]}',
+        'data: {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]}',
+        "data: [DONE]",
+    ]
+
+    async def mock_aiter_lines():
+        for line in mock_response_lines:
+            yield line
+
+    mock_response = AsyncMock()
+    mock_response.aiter_lines = mock_aiter_lines
+    mock_response.raise_for_status = MagicMock()
+
+    with patch.object(model.client, "post", return_value=mock_response):
+        messages = [{"role": "user", "content": [{"text": "save my notes"}]}]
+
+        chunks = []
+        async for chunk in model.stream(messages):
+            chunks.append(chunk)
+
+    stop_chunks = [chunk for chunk in chunks if "messageStop" in chunk]
+    assert len(stop_chunks) == 1
+    assert stop_chunks[0]["messageStop"]["stopReason"] == "tool_use"
