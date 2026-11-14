@@ -400,6 +400,7 @@ def test_end_model_invoke_span(mock_span):
             "gen_ai.usage.completion_tokens": 20,
             "gen_ai.usage.output_tokens": 20,
             "gen_ai.usage.total_tokens": 30,
+            "gen_ai.response.time_to_first_chunk": 0.01,
             "gen_ai.server.time_to_first_token": 10,
             "gen_ai.server.request.duration": 20,
         }
@@ -431,7 +432,7 @@ def test_end_model_invoke_span_latest_conventions(mock_span, monkeypatch):
                 "gen_ai.usage.completion_tokens": 20,
                 "gen_ai.usage.output_tokens": 20,
                 "gen_ai.usage.total_tokens": 30,
-                "gen_ai.server.time_to_first_token": 10,
+                "gen_ai.response.time_to_first_chunk": 0.01,
                 "gen_ai.server.request.duration": 20,
             }
         )
@@ -1264,6 +1265,7 @@ def test_end_model_invoke_span_with_cache_metrics(mock_span):
             "gen_ai.usage.cache_creation.input_tokens": 3,
             "gen_ai.usage.cache_read_input_tokens": 5,
             "gen_ai.usage.cache_write_input_tokens": 3,
+            "gen_ai.response.time_to_first_chunk": 0.005,
             "gen_ai.server.request.duration": 10,
             "gen_ai.server.time_to_first_token": 5,
         }
@@ -1304,6 +1306,7 @@ def test_end_model_invoke_span_counts_disjoint_cache_tokens(mock_span):
             "gen_ai.usage.cache_creation.input_tokens": 3,
             "gen_ai.usage.cache_read_input_tokens": 25,
             "gen_ai.usage.cache_write_input_tokens": 3,
+            "gen_ai.response.time_to_first_chunk": 0.005,
             "gen_ai.server.request.duration": 10,
             "gen_ai.server.time_to_first_token": 5,
         }
@@ -1425,6 +1428,55 @@ def test_end_model_invoke_span_latest_conventions_suppresses_deprecated_cache_na
     assert emitted["gen_ai.usage.cache_creation.input_tokens"] == 3
     assert "gen_ai.usage.cache_read_input_tokens" not in emitted
     assert "gen_ai.usage.cache_write_input_tokens" not in emitted
+
+
+def test_end_model_invoke_span_emits_genai_response_time_to_first_chunk(mock_span):
+    """Regression for #6053: time to first chunk is emitted under the semconv name, in seconds.
+
+    ``gen_ai.response.time_to_first_chunk`` is a double in seconds per the OTel GenAI
+    semconv; the old ``gen_ai.server.time_to_first_token`` name is a server-side metric
+    name in milliseconds and is dual-emitted for backwards compatibility.
+    """
+    tracer = Tracer()
+    message = {"role": "assistant", "content": [{"text": "Response"}]}
+    usage = Usage(inputTokens=10, outputTokens=20, totalTokens=30)
+    metrics = Metrics(latencyMs=20, timeToFirstByteMs=250)
+
+    tracer.end_model_invoke_span(mock_span, message, usage, metrics, "end_turn")
+
+    emitted = mock_span.set_attributes.call_args[0][0]
+    assert emitted["gen_ai.response.time_to_first_chunk"] == 0.25
+    # The deprecated alias keeps its millisecond value.
+    assert emitted["gen_ai.server.time_to_first_token"] == 250
+
+
+def test_end_model_invoke_span_latest_conventions_suppresses_deprecated_time_to_first_token(mock_span, monkeypatch):
+    """Opting into the latest conventions drops the pre-semconv time-to-first-token alias."""
+    monkeypatch.setenv("OTEL_SEMCONV_STABILITY_OPT_IN", "gen_ai_latest_experimental")
+    tracer = Tracer()
+    message = {"role": "assistant", "content": [{"text": "Response"}]}
+    usage = Usage(inputTokens=10, outputTokens=20, totalTokens=30)
+    metrics = Metrics(latencyMs=20, timeToFirstByteMs=250)
+
+    tracer.end_model_invoke_span(mock_span, message, usage, metrics, "end_turn")
+
+    emitted = mock_span.set_attributes.call_args[0][0]
+    assert emitted["gen_ai.response.time_to_first_chunk"] == 0.25
+    assert "gen_ai.server.time_to_first_token" not in emitted
+
+
+def test_end_model_invoke_span_without_time_to_first_byte_has_no_time_to_first_chunk(mock_span):
+    """A model call that never reported a first byte emits no time-to-first-chunk attribute."""
+    tracer = Tracer()
+    message = {"role": "assistant", "content": [{"text": "Response"}]}
+    usage = Usage(inputTokens=10, outputTokens=20, totalTokens=30)
+    metrics = Metrics(latencyMs=20, timeToFirstByteMs=0)
+
+    tracer.end_model_invoke_span(mock_span, message, usage, metrics, "end_turn")
+
+    emitted = mock_span.set_attributes.call_args[0][0]
+    assert "gen_ai.response.time_to_first_chunk" not in emitted
+    assert "gen_ai.server.time_to_first_token" not in emitted
 
 
 def test_get_tracer_singleton():
@@ -1975,7 +2027,7 @@ def test_end_model_invoke_span_langfuse_adds_attributes(mock_span, monkeypatch):
             "gen_ai.usage.completion_tokens": 20,
             "gen_ai.usage.output_tokens": 20,
             "gen_ai.usage.total_tokens": 30,
-            "gen_ai.server.time_to_first_token": 10,
+            "gen_ai.response.time_to_first_chunk": 0.01,
             "gen_ai.server.request.duration": 20,
         }
     )
